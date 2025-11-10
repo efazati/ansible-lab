@@ -1,0 +1,4 @@
+ansible>=2.14.0
+psycopg2-binary>=2.9.0
+jinja2>=3.0.0
+

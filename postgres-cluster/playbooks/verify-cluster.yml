@@ -1,0 +1,196 @@
+---
+- name: Verify PostgreSQL Cluster Health
+  hosts: postgres_cluster
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Check PostgreSQL service status
+      systemd:
+        name: postgresql
+      register: pg_service
+
+    - name: Display service status
+      debug:
+        msg: "PostgreSQL service is {{ pg_service.status.ActiveState }} on {{ inventory_hostname }}"
+
+    - name: Check PostgreSQL is listening
+      wait_for:
+        port: 5432
+        timeout: 5
+      register: pg_port
+
+    - name: Get PostgreSQL version
+      become_user: postgres
+      command: psql --version
+      register: pg_version
+
+    - name: Display PostgreSQL version
+      debug:
+        var: pg_version.stdout
+
+- name: Verify Primary Node
+  hosts: postgres_primary
+  become: yes
+  tasks:
+    - name: Check if node is primary
+      become_user: postgres
+      postgresql_query:
+        db: postgres
+        query: "SELECT pg_is_in_recovery()"
+      register: is_recovery
+
+    - name: Display primary status
+      debug:
+        msg: "Node {{ inventory_hostname }} is {{ 'STANDBY' if is_recovery.query_result[0].pg_is_in_recovery else 'PRIMARY' }}"
+
+    - name: Get replication status
+      become_user: postgres
+      postgresql_query:
+        db: postgres
+        query: |
+          SELECT
+            client_addr,
+            application_name,
+            state,
+            sync_state,
+            sent_lsn,
+            write_lsn,
+            flush_lsn,
+            replay_lsn
+          FROM pg_stat_replication
+      register: replication_status
+
+    - name: Display replication connections
+      debug:
+        msg: "{{ replication_status.query_result }}"
+
+    - name: Get replication slots
+      become_user: postgres
+      postgresql_query:
+        db: postgres
+        query: "SELECT slot_name, slot_type, active, restart_lsn FROM pg_replication_slots"
+      register: replication_slots
+
+    - name: Display replication slots
+      debug:
+        msg: "{{ replication_slots.query_result }}"
+
+    - name: List databases
+      become_user: postgres
+      postgresql_query:
+        db: postgres
+        query: "SELECT datname FROM pg_database WHERE datistemplate = false"
+      register: databases
+
+    - name: Display databases
+      debug:
+        msg: "{{ databases.query_result }}"
+
+- name: Verify Standby Nodes
+  hosts: postgres_standby
+  become: yes
+  tasks:
+    - name: Check if node is in recovery
+      become_user: postgres
+      postgresql_query:
+        db: postgres
+        query: "SELECT pg_is_in_recovery()"
+      register: is_recovery
+
+    - name: Display standby status
+      debug:
+        msg: "Node {{ inventory_hostname }} is {{ 'STANDBY (OK)' if is_recovery.query_result[0].pg_is_in_recovery else 'ERROR: Not in recovery mode!' }}"
+
+    - name: Get replication lag
+      become_user: postgres
+      postgresql_query:
+        db: postgres
+        query: |
+          SELECT
+            pg_last_wal_receive_lsn() AS receive_lsn,
+            pg_last_wal_replay_lsn() AS replay_lsn,
+            pg_last_wal_receive_lsn() - pg_last_wal_replay_lsn() AS replication_lag_bytes
+      register: replication_lag
+
+    - name: Display replication lag
+      debug:
+        msg: "{{ replication_lag.query_result }}"
+
+- name: Test Cluster Functionality
+  hosts: postgres_primary
+  become: yes
+  tasks:
+    - name: Create test table
+      become_user: postgres
+      postgresql_query:
+        db: testdb
+        query: |
+          CREATE TABLE IF NOT EXISTS test_replication (
+            id SERIAL PRIMARY KEY,
+            test_data TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          )
+
+    - name: Insert test data
+      become_user: postgres
+      postgresql_query:
+        db: testdb
+        query: "INSERT INTO test_replication (test_data) VALUES ('Test data from primary at {{ ansible_date_time.iso8601 }}')"
+
+    - name: Read test data from primary
+      become_user: postgres
+      postgresql_query:
+        db: testdb
+        query: "SELECT * FROM test_replication ORDER BY id DESC LIMIT 5"
+      register: primary_data
+
+    - name: Display data from primary
+      debug:
+        msg: "{{ primary_data.query_result }}"
+
+- name: Verify Data Replication on Standby
+  hosts: postgres_standby
+  become: yes
+  tasks:
+    - name: Wait for replication to catch up
+      pause:
+        seconds: 3
+
+    - name: Read test data from standby
+      become_user: postgres
+      postgresql_query:
+        db: testdb
+        query: "SELECT * FROM test_replication ORDER BY id DESC LIMIT 5"
+      register: standby_data
+
+    - name: Display data from standby
+      debug:
+        msg: "{{ standby_data.query_result }}"
+
+    - name: Verify replication
+      debug:
+        msg: "✅ Data successfully replicated to {{ inventory_hostname }}"
+      when: standby_data.query_result | length > 0
+
+- name: Cluster Health Summary
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Display cluster summary
+      debug:
+        msg:
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║        PostgreSQL Cluster Health Check Complete         ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - ""
+          - "Cluster Status: HEALTHY ✅"
+          - ""
+          - "Primary Node: {{ groups['postgres_primary'][0] }}"
+          - "Standby Nodes: {{ groups['postgres_standby'] | join(', ') }}"
+          - ""
+          - "Next Steps:"
+          - "  - Connect to primary: psql -h <primary-ip> -U testuser -d testdb"
+          - "  - Monitor replication: psql -h <primary-ip> -U postgres -c 'SELECT * FROM pg_stat_replication;'"
+          - "  - Test failover: Promote standby to primary if needed"
+

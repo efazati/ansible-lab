@@ -1,0 +1,308 @@
+---
+- name: Setup PostgreSQL Cluster
+  hosts: postgres_cluster
+  become: yes
+  vars:
+    postgres_version: "16"
+    postgres_data_dir: "/var/lib/postgresql/{{ postgres_version }}/main"
+    postgres_conf_dir: "/etc/postgresql/{{ postgres_version }}/main"
+    replication_user: "replicator"
+    replication_password: "replicator_password"
+    postgres_max_connections: 100
+    postgres_shared_buffers: "256MB"
+    postgres_effective_cache_size: "1GB"
+    postgres_maintenance_work_mem: "64MB"
+    postgres_checkpoint_completion_target: 0.9
+    postgres_wal_buffers: "16MB"
+    postgres_default_statistics_target: 100
+    postgres_random_page_cost: 1.1
+    postgres_effective_io_concurrency: 200
+    postgres_work_mem: "4MB"
+    postgres_huge_pages: "try"
+    postgres_min_wal_size: "1GB"
+    postgres_max_wal_size: "4GB"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - postgresql-{{ postgres_version }}
+          - postgresql-contrib-{{ postgres_version }}
+          - python3-psycopg2
+          - acl
+        state: present
+
+    - name: Ensure PostgreSQL is stopped before configuration
+      systemd:
+        name: postgresql
+        state: stopped
+
+- name: Configure PostgreSQL Primary
+  hosts: postgres_primary
+  become: yes
+  vars:
+    postgres_version: "16"
+    postgres_data_dir: "/var/lib/postgresql/{{ postgres_version }}/main"
+    postgres_conf_dir: "/etc/postgresql/{{ postgres_version }}/main"
+    replication_user: "replicator"
+    replication_password: "replicator_password"
+
+  tasks:
+    - name: Get primary node IP address
+      set_fact:
+        primary_ip: "{{ ansible_default_ipv4.address }}"
+
+    - name: Configure postgresql.conf for primary
+      blockinfile:
+        path: "{{ postgres_conf_dir }}/postgresql.conf"
+        block: |
+          # Connection Settings
+          listen_addresses = '*'
+          max_connections = 100
+
+          # Memory Settings
+          shared_buffers = 256MB
+          effective_cache_size = 1GB
+          maintenance_work_mem = 64MB
+          work_mem = 4MB
+
+          # WAL Settings
+          wal_level = replica
+          max_wal_senders = 10
+          max_replication_slots = 10
+          wal_keep_size = 1GB
+
+          # Replication Settings
+          hot_standby = on
+
+          # Checkpoint Settings
+          checkpoint_completion_target = 0.9
+          wal_buffers = 16MB
+          min_wal_size = 1GB
+          max_wal_size = 4GB
+
+          # Logging
+          logging_collector = on
+          log_directory = 'log'
+          log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+          log_rotation_age = 1d
+          log_rotation_size = 100MB
+          log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
+          log_timezone = 'UTC'
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - Primary Configuration"
+        create: yes
+
+    - name: Configure pg_hba.conf for primary
+      blockinfile:
+        path: "{{ postgres_conf_dir }}/pg_hba.conf"
+        block: |
+          # Allow replication connections
+          host    replication     {{ replication_user }}    0.0.0.0/0       md5
+          # Allow all connections from cluster network
+          host    all             all                       0.0.0.0/0       md5
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - Replication"
+        create: yes
+
+    - name: Start PostgreSQL on primary
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Wait for PostgreSQL to be ready
+      wait_for:
+        port: 5432
+        delay: 2
+        timeout: 30
+
+    - name: Create replication user
+      become: yes
+      become_user: postgres
+      postgresql_user:
+        name: "{{ replication_user }}"
+        password: "{{ replication_password }}"
+        role_attr_flags: REPLICATION,LOGIN
+        state: present
+
+    - name: Create replication slots for standby nodes
+      become: yes
+      become_user: postgres
+      postgresql_query:
+        db: postgres
+        query: "SELECT * FROM pg_create_physical_replication_slot('{{ item }}') WHERE NOT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = '{{ item }}')"
+      loop:
+        - standby_1
+        - standby_2
+      ignore_errors: yes
+
+    - name: Create test database
+      become: yes
+      become_user: postgres
+      postgresql_db:
+        name: testdb
+        state: present
+
+    - name: Create test user
+      become: yes
+      become_user: postgres
+      postgresql_user:
+        name: testuser
+        password: testpass
+        db: testdb
+        state: present
+
+    - name: Grant privileges to test user
+      become: yes
+      become_user: postgres
+      postgresql_privs:
+        database: testdb
+        state: present
+        privs: ALL
+        type: database
+        roles: testuser
+
+    - name: Save primary IP for standby configuration
+      set_fact:
+        primary_host_ip: "{{ primary_ip }}"
+      delegate_to: "{{ item }}"
+      delegate_facts: yes
+      loop: "{{ groups['postgres_standby'] }}"
+
+- name: Configure PostgreSQL Standby Nodes
+  hosts: postgres_standby
+  become: yes
+  serial: 1
+  vars:
+    postgres_version: "16"
+    postgres_data_dir: "/var/lib/postgresql/{{ postgres_version }}/main"
+    postgres_conf_dir: "/etc/postgresql/{{ postgres_version }}/main"
+    replication_user: "replicator"
+    replication_password: "replicator_password"
+
+  tasks:
+    - name: Stop PostgreSQL on standby
+      systemd:
+        name: postgresql
+        state: stopped
+
+    - name: Remove existing data directory
+      file:
+        path: "{{ postgres_data_dir }}"
+        state: absent
+
+    - name: Create empty data directory
+      file:
+        path: "{{ postgres_data_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0700'
+
+    - name: Get primary host IP
+      set_fact:
+        primary_host: "{{ hostvars[groups['postgres_primary'][0]]['ansible_default_ipv4']['address'] }}"
+
+    - name: Run pg_basebackup from primary
+      become: yes
+      become_user: postgres
+      shell: |
+        PGPASSWORD="{{ replication_password }}" pg_basebackup -h {{ primary_host }} -D {{ postgres_data_dir }} -U {{ replication_user }} -P -v -R -X stream -S {{ inventory_hostname | replace('-', '_') }}_slot
+      environment:
+        PGPASSWORD: "{{ replication_password }}"
+
+    - name: Configure postgresql.conf for standby
+      blockinfile:
+        path: "{{ postgres_conf_dir }}/postgresql.conf"
+        block: |
+          # Connection Settings
+          listen_addresses = '*'
+          max_connections = 100
+
+          # Memory Settings
+          shared_buffers = 256MB
+          effective_cache_size = 1GB
+          maintenance_work_mem = 64MB
+          work_mem = 4MB
+
+          # WAL Settings
+          wal_level = replica
+          max_wal_senders = 10
+          max_replication_slots = 10
+          wal_keep_size = 1GB
+
+          # Replication Settings
+          hot_standby = on
+
+          # Checkpoint Settings
+          checkpoint_completion_target = 0.9
+          wal_buffers = 16MB
+          min_wal_size = 1GB
+          max_wal_size = 4GB
+
+          # Standby Settings
+          primary_conninfo = 'host={{ primary_host }} port=5432 user={{ replication_user }} password={{ replication_password }}'
+          primary_slot_name = '{{ inventory_hostname | replace("-", "_") }}_slot'
+
+          # Logging
+          logging_collector = on
+          log_directory = 'log'
+          log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+          log_rotation_age = 1d
+          log_rotation_size = 100MB
+          log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
+          log_timezone = 'UTC'
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - Standby Configuration"
+
+    - name: Create standby.signal file
+      file:
+        path: "{{ postgres_data_dir }}/standby.signal"
+        state: touch
+        owner: postgres
+        group: postgres
+        mode: '0600'
+
+    - name: Start PostgreSQL on standby
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Wait for PostgreSQL to be ready on standby
+      wait_for:
+        port: 5432
+        delay: 2
+        timeout: 30
+
+- name: Verify Cluster Configuration
+  hosts: postgres_primary
+  become: yes
+  vars:
+    replication_user: "replicator"
+    replication_password: "replicator_password"
+  tasks:
+    - name: Check replication status
+      become_user: postgres
+      postgresql_query:
+        db: postgres
+        query: "SELECT * FROM pg_stat_replication"
+      register: replication_status
+
+    - name: Display replication status
+      debug:
+        var: replication_status
+
+    - name: Show cluster summary
+      debug:
+        msg:
+          - "PostgreSQL Cluster Setup Complete!"
+          - "Primary Node: {{ inventory_hostname }}"
+          - "Standby Nodes: {{ groups['postgres_standby'] | join(', ') }}"
+          - "Replication User: {{ replication_user }}"
+          - "Test Database: testdb"
+          - "Test User: testuser / testpass"
+

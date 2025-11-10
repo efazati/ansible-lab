@@ -1,0 +1,16 @@
+title: "PostgreSQL Cluster Workspace"
+description: "A workspace for PostgreSQL cluster with 3 Ubuntu nodes"
+
+duration: 1
+duration_unit: "hours"
+
+boxes:
+  - title: "pg-node-1"
+    description: "PostgreSQL Primary Node"
+    recipe_title: "Ubuntu 24.04 LTS"
+  - title: "pg-node-2"
+    description: "PostgreSQL Standby Node 1"
+    recipe_title: "Ubuntu 24.04 LTS"
+  - title: "pg-node-3"
+    description: "PostgreSQL Standby Node 2"
+    recipe_title: "Ubuntu 24.04 LTS"

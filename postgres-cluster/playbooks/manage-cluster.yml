@@ -1,0 +1,51 @@
+---
+- name: Manage PostgreSQL Cluster
+  hosts: postgres_cluster
+  become: yes
+  vars:
+    action: "status"  # Options: start, stop, restart, status
+
+  tasks:
+    - name: Display action
+      debug:
+        msg: "Performing action: {{ action }} on {{ inventory_hostname }}"
+
+    - name: Stop PostgreSQL
+      systemd:
+        name: postgresql
+        state: stopped
+      when: action == "stop"
+
+    - name: Start PostgreSQL
+      systemd:
+        name: postgresql
+        state: started
+      when: action == "start"
+
+    - name: Restart PostgreSQL
+      systemd:
+        name: postgresql
+        state: restarted
+      when: action == "restart"
+
+    - name: Get PostgreSQL status
+      systemd:
+        name: postgresql
+      register: pg_status
+
+    - name: Display status
+      debug:
+        msg:
+          - "Service: {{ pg_status.status.Id }}"
+          - "Active: {{ pg_status.status.ActiveState }}"
+          - "SubState: {{ pg_status.status.SubState }}"
+          - "Running: {{ pg_status.status.ExecMainPID | default('Not running') }}"
+
+- name: Display Summary
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Summary message
+      debug:
+        msg: "Cluster management action completed!"
+

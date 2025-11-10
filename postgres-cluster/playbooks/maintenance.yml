@@ -1,0 +1,178 @@
+---
+- name: PostgreSQL Cluster Maintenance Tasks
+  hosts: postgres_cluster
+  become: yes
+
+  tasks:
+    - name: Display maintenance options
+      debug:
+        msg:
+          - "Available maintenance tasks:"
+          - "1. Update PostgreSQL configuration"
+          - "2. Analyze databases"
+          - "3. Vacuum databases"
+          - "4. Check disk usage"
+          - "5. Backup database"
+
+- name: Check Disk Usage
+  hosts: postgres_cluster
+  become: yes
+  tasks:
+    - name: Get disk usage
+      shell: df -h /var/lib/postgresql
+      register: disk_usage
+
+    - name: Display disk usage
+      debug:
+        msg: "{{ disk_usage.stdout_lines }}"
+
+    - name: Get PostgreSQL data directory size
+      shell: du -sh /var/lib/postgresql/16/main
+      register: data_dir_size
+
+    - name: Display data directory size
+      debug:
+        msg: "Data directory size: {{ data_dir_size.stdout }}"
+
+- name: Analyze Databases
+  hosts: postgres_cluster
+  become: yes
+  tasks:
+    - name: Run ANALYZE on all databases
+      become_user: postgres
+      shell: |
+        for db in $(psql -t -c "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres'"); do
+          echo "Analyzing database: $db"
+          psql -d $db -c "ANALYZE VERBOSE;"
+        done
+      register: analyze_result
+
+    - name: Display analyze results
+      debug:
+        var: analyze_result.stdout_lines
+
+- name: Vacuum Databases (Primary Only)
+  hosts: postgres_primary
+  become: yes
+  tasks:
+    - name: Run VACUUM on all databases
+      become_user: postgres
+      shell: |
+        for db in $(psql -t -c "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres'"); do
+          echo "Vacuuming database: $db"
+          psql -d $db -c "VACUUM VERBOSE;"
+        done
+      register: vacuum_result
+
+    - name: Display vacuum results
+      debug:
+        var: vacuum_result.stdout_lines
+
+- name: Backup Primary Database
+  hosts: postgres_primary
+  become: yes
+  vars:
+    backup_dir: "/var/backups/postgresql"
+    backup_retention_days: 7
+
+  tasks:
+    - name: Create backup directory
+      file:
+        path: "{{ backup_dir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0700'
+
+    - name: Run pg_dump for testdb
+      become_user: postgres
+      shell: |
+        BACKUP_FILE="{{ backup_dir }}/testdb_$(date +%Y%m%d_%H%M%S).sql.gz"
+        pg_dump testdb | gzip > "$BACKUP_FILE"
+        echo "$BACKUP_FILE"
+      register: backup_result
+
+    - name: Display backup location
+      debug:
+        msg: "Backup created: {{ backup_result.stdout }}"
+
+    - name: Clean old backups
+      shell: find {{ backup_dir }} -name "testdb_*.sql.gz" -mtime +{{ backup_retention_days }} -delete
+      register: cleanup_result
+
+    - name: List current backups
+      shell: ls -lh {{ backup_dir }}/
+      register: backup_list
+
+    - name: Display current backups
+      debug:
+        var: backup_list.stdout_lines
+
+- name: Check Replication Health
+  hosts: postgres_primary
+  become: yes
+  tasks:
+    - name: Check replication slots
+      become_user: postgres
+      postgresql_query:
+        db: postgres
+        query: |
+          SELECT
+            slot_name,
+            slot_type,
+            active,
+            restart_lsn,
+            CASE
+              WHEN active THEN 'ACTIVE'
+              ELSE 'INACTIVE'
+            END as status
+          FROM pg_replication_slots
+      register: replication_slots
+
+    - name: Display replication slot status
+      debug:
+        msg: "{{ replication_slots.query_result }}"
+
+    - name: Check for inactive slots
+      debug:
+        msg: "⚠️ WARNING: Inactive replication slots detected!"
+      when: replication_slots.query_result | selectattr('active', 'equalto', false) | list | length > 0
+
+    - name: Get WAL file count
+      become_user: postgres
+      shell: ls -1 /var/lib/postgresql/16/main/pg_wal/ | wc -l
+      register: wal_count
+
+    - name: Display WAL file count
+      debug:
+        msg: "WAL files in pg_wal: {{ wal_count.stdout }}"
+
+    - name: Check for WAL accumulation
+      debug:
+        msg: "⚠️ WARNING: High WAL file count detected! Check replication."
+      when: wal_count.stdout | int > 100
+
+- name: Generate Maintenance Report
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Summary
+      debug:
+        msg:
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║           PostgreSQL Maintenance Complete               ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - ""
+          - "Tasks completed:"
+          - "  ✅ Disk usage checked"
+          - "  ✅ Databases analyzed"
+          - "  ✅ Databases vacuumed (primary only)"
+          - "  ✅ Backup created (primary only)"
+          - "  ✅ Replication health checked"
+          - ""
+          - "Recommendations:"
+          - "  - Schedule regular vacuuming (weekly)"
+          - "  - Monitor disk usage growth"
+          - "  - Keep backups for disaster recovery"
+          - "  - Check replication lag regularly"
+
