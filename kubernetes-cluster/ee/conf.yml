@@ -1,0 +1,17 @@
+title: "Kubernetes Cluster Workspace"
+description: "A workspace for Kubernetes cluster with 3 Ubuntu nodes using Kubespray"
+
+duration: 2
+duration_unit: "hours"
+
+boxes:
+  - title: "k8s-master-1"
+    description: "Kubernetes Control Plane Node"
+    recipe_title: "Ubuntu 24.04 LTS"
+  - title: "k8s-worker-1"
+    description: "Kubernetes Worker Node 1"
+    recipe_title: "Ubuntu 24.04 LTS"
+  - title: "k8s-worker-2"
+    description: "Kubernetes Worker Node 2"
+    recipe_title: "Ubuntu 24.04 LTS"
+

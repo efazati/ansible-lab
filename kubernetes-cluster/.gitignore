@@ -1,0 +1,51 @@
+# Environment
+.env
+*.env
+
+# Ansible
+*.retry
+.ansible/
+/tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Kubespray
+kubespray/
+inventory/sample/
+credentials/
+
+# SSH Keys
+*.pem
+*.key
+id_rsa*
+
+# Logs
+*.log
+
+# Kubeconfig
+kubeconfig
+admin.conf
+

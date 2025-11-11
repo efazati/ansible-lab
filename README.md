@@ -17,3 +17,25 @@ make deploy
 ```
 
 See [postgres-cluster/README.md](postgres-cluster/README.md) for details.
+
+### Lab 2: Kubernetes Cluster (`kubernetes-cluster/`)
+
+Production-ready Kubernetes cluster using Kubespray (1 master + 2 worker nodes).
+
+**Quick Start (Automated):**
+```bash
+cd kubernetes-cluster
+make auto
+export KUBECONFIG=$(pwd)/kubeconfig
+kubectl get nodes
+```
+
+**Quick Start (Manual):**
+```bash
+cd kubernetes-cluster
+make init && make vpn && make ssh && make inventory
+make install && make kubespray && make deploy
+make kubeconfig
+```
+
+See [kubernetes-cluster/README.md](kubernetes-cluster/README.md) for details.

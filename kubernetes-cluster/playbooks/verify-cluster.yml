@@ -1,0 +1,86 @@
+---
+- name: Verify Kubernetes Cluster Health
+  hosts: all
+  gather_facts: yes
+  become: yes
+  tasks:
+    - name: Check if kubectl is installed
+      command: kubectl version --client --short
+      register: kubectl_version
+      changed_when: false
+      failed_when: false
+
+    - name: Display kubectl version
+      debug:
+        msg: "{{ kubectl_version.stdout }}"
+      when: kubectl_version.rc == 0
+
+    - name: Check if kubelet is running
+      systemd:
+        name: kubelet
+        state: started
+      check_mode: yes
+      register: kubelet_status
+      failed_when: false
+
+    - name: Display kubelet status
+      debug:
+        msg: "Kubelet is {{ 'running' if kubelet_status.changed == false else 'not running' }}"
+
+- name: Check Cluster Status from Master
+  hosts: kube_master
+  gather_facts: no
+  become: yes
+  tasks:
+    - name: Get cluster info
+      command: kubectl cluster-info
+      register: cluster_info
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display cluster info
+      debug:
+        msg: "{{ cluster_info.stdout_lines }}"
+      when: cluster_info.rc == 0
+
+    - name: Get node status
+      command: kubectl get nodes -o wide
+      register: nodes_status
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display nodes status
+      debug:
+        msg: "{{ nodes_status.stdout_lines }}"
+      when: nodes_status.rc == 0
+
+    - name: Get pod status in all namespaces
+      command: kubectl get pods --all-namespaces
+      register: pods_status
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display pods status
+      debug:
+        msg: "{{ pods_status.stdout_lines }}"
+      when: pods_status.rc == 0
+
+    - name: Check component status
+      command: kubectl get componentstatuses
+      register: component_status
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Display component status
+      debug:
+        msg: "{{ component_status.stdout_lines }}"
+      when: component_status.rc == 0
+

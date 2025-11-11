@@ -1,0 +1,83 @@
+---
+- name: Prepare Ubuntu nodes for Kubernetes
+  hosts: all
+  become: yes
+  gather_facts: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install basic packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - software-properties-common
+          - python3
+          - python3-pip
+          - net-tools
+          - vim
+          - htop
+        state: present
+
+    - name: Disable swap (required for Kubernetes)
+      shell: |
+        swapoff -a
+        sed -i '/ swap / s/^/#/' /etc/fstab
+      when: ansible_swaptotal_mb > 0
+
+    - name: Enable IPv4 forwarding
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        state: present
+        reload: yes
+
+    - name: Enable IPv6 forwarding
+      sysctl:
+        name: net.ipv6.conf.all.forwarding
+        value: '1'
+        state: present
+        reload: yes
+
+    - name: Load required kernel modules
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Ensure kernel modules load on boot
+      copy:
+        content: |
+          overlay
+          br_netfilter
+        dest: /etc/modules-load.d/k8s.conf
+        mode: '0644'
+
+    - name: Set sysctl parameters for Kubernetes
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+      loop:
+        - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+        - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+
+    - name: Display node information
+      debug:
+        msg:
+          - "Hostname: {{ ansible_hostname }}"
+          - "IP Address: {{ ansible_default_ipv4.address }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Kernel: {{ ansible_kernel }}"
+          - "Memory: {{ ansible_memtotal_mb }} MB"
+          - "CPUs: {{ ansible_processor_vcpus }}"
+
